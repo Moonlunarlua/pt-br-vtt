@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- livro aberto -->
+    <path
+        android:fillColor="#F4ECD8"
+        android:pathData="M30,40 C38,36 46,36 53,40 L53,74 C46,70 38,70 30,74 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M78,40 C70,36 62,36 55,40 L55,74 C62,70 70,70 78,74 Z" />
+    <!-- marcador -->
+    <path
+        android:fillColor="#E8A33D"
+        android:pathData="M66,36 L72,36 L72,52 L69,49 L66,52 Z" />
+</vector>
