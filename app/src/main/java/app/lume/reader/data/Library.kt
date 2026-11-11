@@ -16,6 +16,7 @@ import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -34,11 +35,59 @@ class Library(context: Context) {
     var books by mutableStateOf(listOf<Book>())
         private set
 
+    /** Frases marcadas de cada livro (id do livro -> frases na ordem em que aparecem no texto). */
+    var highlights by mutableStateOf(mapOf<String, List<Highlight>>())
+        private set
+
     init {
         PDFBoxResourceLoader.init(appContext)
         books = (root.listFiles() ?: emptyArray()).mapNotNull { dir ->
             runCatching { Book.fromJson(JSONObject(File(dir, "meta.json").readText())) }.getOrNull()
         }.sortedByDescending { maxOf(it.lastOpened, it.addedAt) }
+        highlights = books.mapNotNull { book ->
+            val list = runCatching {
+                val array = JSONArray(File(dir(book.id), "highlights.json").readText())
+                List(array.length()) { Highlight.fromJson(array.getJSONObject(it)) }
+            }.getOrDefault(emptyList())
+            if (list.isEmpty()) null else book.id to list
+        }.toMap()
+    }
+
+    fun highlightsOf(bookId: String): List<Highlight> = highlights[bookId].orEmpty()
+
+    private fun setHighlights(bookId: String, list: List<Highlight>) {
+        val sorted = list.sortedWith(compareBy({ it.para }, { it.start }))
+        highlights = if (sorted.isEmpty()) highlights - bookId else highlights + (bookId to sorted)
+        runCatching {
+            File(dir(bookId), "highlights.json")
+                .writeText(JSONArray().also { a -> sorted.forEach { a.put(it.toJson()) } }.toString())
+        }
+    }
+
+    fun addHighlight(bookId: String, para: Int, start: Int, end: Int, text: String, page: Int) {
+        val h = Highlight(UUID.randomUUID().toString(), para, start, end, text, page, System.currentTimeMillis())
+        // uma marcação nova substitui as que ela sobrepõe no mesmo parágrafo
+        val kept = highlightsOf(bookId).filterNot { it.para == para && it.start < end && start < it.end }
+        setHighlights(bookId, kept + h)
+    }
+
+    fun removeHighlight(bookId: String, id: String) {
+        setHighlights(bookId, highlightsOf(bookId).filterNot { it.id == id })
+    }
+
+    /** Depois de editar um texto, reencontra cada frase marcada no texto novo (as que sumiram são descartadas). */
+    private fun relocateHighlights(bookId: String, paragraphs: List<String>) {
+        val old = highlightsOf(bookId)
+        if (old.isEmpty()) return
+        val moved = old.mapNotNull { h ->
+            val order = (paragraphs.indices).sortedBy { kotlin.math.abs(it - h.para) }
+            for (i in order) {
+                val at = paragraphs[i].indexOf(h.text)
+                if (at >= 0) return@mapNotNull h.copy(para = i, start = at, end = at + h.text.length)
+            }
+            null
+        }
+        setHighlights(bookId, moved)
     }
 
     private fun dir(id: String) = File(root, id)
@@ -59,6 +108,7 @@ class Library(context: Context) {
 
     fun delete(id: String) {
         books = books.filter { it.id != id }
+        highlights = highlights - id
         dir(id).deleteRecursively()
     }
 
@@ -88,7 +138,10 @@ class Library(context: Context) {
                 hasText = true,
                 paraIndex = (old?.paraIndex ?: 0).coerceAtMost(paragraphs.size - 1),
             )
-            withContext(Dispatchers.Main) { save(book) }
+            withContext(Dispatchers.Main) {
+                save(book)
+                if (old != null) relocateHighlights(id, paragraphs)
+            }
             book
         }
 

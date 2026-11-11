@@ -86,6 +86,13 @@ private fun scheme(theme: ReaderTheme): ColorScheme {
     }
 }
 
+/** Cor de fundo das frases marcadas em cada modo de tela. */
+fun highlightColor(theme: ReaderTheme): Color = when (theme) {
+    ReaderTheme.LIGHT -> Color(0xFFFFE27A)
+    ReaderTheme.SEPIA -> Color(0xFFEBC66B)
+    ReaderTheme.DARK -> Color(0xFF5E4A0E)
+}
+
 @Composable
 fun LumeTheme(theme: ReaderTheme, content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme(theme), content = content)

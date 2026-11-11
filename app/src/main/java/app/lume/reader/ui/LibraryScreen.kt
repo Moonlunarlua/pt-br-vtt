@@ -19,6 +19,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as listItems
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.Tab
+import androidx.compose.material3.ScrollableTabRow
+import app.lume.reader.data.Dictionary
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -79,11 +89,15 @@ import kotlin.math.roundToInt
 fun LibraryScreen(
     library: Library,
     settings: Settings,
+    dictionary: Dictionary,
+    tab: Int,
+    onTabChange: (Int) -> Unit,
     incomingUri: Uri?,
     onIncomingHandled: () -> Unit,
     onOpen: (String) -> Unit,
     onNewText: () -> Unit,
     onEditText: (String) -> Unit,
+    onOpenHighlights: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var importing by remember { mutableStateOf(false) }
@@ -138,7 +152,7 @@ fun LibraryScreen(
             )
         },
         floatingActionButton = {
-            Box {
+            if (tab == 0) Box {
                 ExtendedFloatingActionButton(
                     onClick = { addMenu = true },
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -163,9 +177,23 @@ fun LibraryScreen(
             }
         },
     ) { padding ->
-        if (library.books.isEmpty()) {
+      Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        ScrollableTabRow(selectedTabIndex = tab, edgePadding = 8.dp) {
+            listOf("Livros", "Frases marcadas", "Dicionário").forEachIndexed { i, label ->
+                Tab(selected = tab == i, onClick = { onTabChange(i) }, text = { Text(label, maxLines = 1) })
+            }
+        }
+        if (tab == 1) {
+            HighlightsTab(library, onOpenHighlights)
+        } else if (tab == 2) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(32.dp),
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(20.dp),
+            ) {
+                DictionaryPanel(dictionary = dictionary, initialWord = "")
+            }
+        } else if (library.books.isEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(32.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -186,7 +214,7 @@ fun LibraryScreen(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 150.dp),
-                modifier = Modifier.fillMaxSize().padding(padding),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
@@ -204,6 +232,7 @@ fun LibraryScreen(
                 }
             }
         }
+      }
     }
 
     if (showSettings) {
@@ -272,6 +301,43 @@ fun LibraryScreen(
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancelar") } },
         )
+    }
+}
+
+/** Aba "Frases marcadas": um item por livro, com a quantidade de frases. */
+@Composable
+private fun HighlightsTab(library: Library, onOpen: (String) -> Unit) {
+    val items = library.books.mapNotNull { book ->
+        val count = library.highlightsOf(book.id).size
+        if (count > 0) book to count else null
+    }
+    if (items.isEmpty()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("Nenhuma frase marcada ainda", style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Durante a leitura (no modo texto), segure o dedo sobre uma frase e toque em “Marcar frase”.",
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
+        listItems(items, key = { it.first.id }) { (book, count) ->
+            ListItem(
+                headlineContent = {
+                    Text(book.title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                },
+                supportingContent = { Text(if (count == 1) "1 frase marcada" else "$count frases marcadas") },
+                modifier = Modifier.clickable { onOpen(book.id) },
+            )
+            HorizontalDivider()
+        }
     }
 }
 

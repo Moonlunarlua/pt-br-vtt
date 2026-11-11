@@ -13,6 +13,13 @@ App Android (Kotlin + Jetpack Compose) para ler PDFs e textos, no estilo Kindle 
   - *Rolar a tela*: arrasta o texto para cima e para baixo.
   - *Tocar nas laterais*: uma tela por vez, como no Kindle — toque na direita avança, na esquerda volta
     (ou deslize para os lados); toque no meio abre o menu. Vale também para as páginas do PDF.
+- **Frases marcadas**: no modo texto, segure o dedo sobre uma frase e toque em *Marcar frase*; ela fica destacada.
+  Na tela inicial, a aba *Frases marcadas* lista os livros ("Fundação e Império — 5 frases marcadas"); tocando no
+  livro aparecem as frases em tópicos, e tocar numa frase abre o livro exatamente nela.
+- **Dicionário offline**: o mesmo toque longo mostra a definição da palavra que estava sob o dedo, e a aba
+  *Dicionário* permite consultar qualquer palavra. São ~99 mil verbetes e ~408 mil formas flexionadas embutidos no
+  app, sem internet. A busca entende plurais, femininos, diminutivos, verbos conjugados ("fizeram" → *fazer*),
+  pronomes grudados ("fazê-lo", "dir-se-ia"), falta de acento e grafias antigas ou de Portugal ("acção", "óptimo").
 - **Progresso**: porcentagem lida, página atual e **tempo restante** calculado com a *sua* velocidade de leitura,
   medida enquanto você lê (até ter dados suficientes, usa 200 palavras/min).
 - **Modos de tela**: Claro, Leitura (sépia) e Escuro — valem também para as páginas do PDF.
@@ -38,6 +45,13 @@ Precisa do JDK 17+ e do Android SDK (plataforma 35).
 
 > O arquivo `sideload.keystore` é uma chave de assinatura só para instalação direta, para que as atualizações
 > instalem por cima da versão anterior. Não use essa chave para publicar em loja.
+
+## Dicionário
+
+As definições vêm do [Wikcionário](https://pt.wiktionary.org) em português (licença
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/deed.pt-br)), a partir da extração feita pelo projeto
+[kaikki.org](https://kaikki.org/ptwiktionary/). O arquivo `app/src/main/assets/dicionario.bin` é gerado por
+`tools/build_dictionary.py` (as instruções estão no começo do script).
 
 ## Fontes incluídas
 

@@ -14,23 +14,34 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import app.lume.reader.data.Dictionary
+import app.lume.reader.data.Highlight
 import app.lume.reader.data.Library
 import app.lume.reader.data.ReaderTheme
 import app.lume.reader.data.Settings
 import app.lume.reader.ui.EditorScreen
+import app.lume.reader.ui.HighlightsScreen
 import app.lume.reader.ui.LibraryScreen
 import app.lume.reader.ui.LumeTheme
 import app.lume.reader.ui.ReaderScreen
 
 sealed interface Screen {
     data object Library : Screen
-    data class Reader(val bookId: String) : Screen
+    data class Reader(val bookId: String, val jump: Highlight? = null) : Screen
+    data class Highlights(val bookId: String) : Screen
     data class Editor(val bookId: String?, val initialText: String = "") : Screen
 }
 
 class MainActivity : ComponentActivity() {
     private lateinit var library: Library
     private lateinit var settings: Settings
+    private lateinit var dictionary: Dictionary
+
+    /** Aba selecionada na tela inicial (0 = livros, 1 = frases marcadas, 2 = dicionário). */
+    private var homeTab by mutableStateOf(0)
+
+    /** Para onde o botão "voltar" do leitor leva. */
+    private var readerReturn: Screen = Screen.Library
 
     private var screen by mutableStateOf<Screen>(Screen.Library)
 
@@ -41,6 +52,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         library = Library(this)
         settings = Settings(this)
+        dictionary = Dictionary(this)
         savedInstanceState?.getString("readerBook")?.let { id ->
             if (library.find(id) != null) screen = Screen.Reader(id)
         }
@@ -62,14 +74,33 @@ class MainActivity : ComponentActivity() {
                     Screen.Library -> LibraryScreen(
                         library = library,
                         settings = settings,
+                        dictionary = dictionary,
+                        tab = homeTab,
+                        onTabChange = { homeTab = it },
                         incomingUri = incomingUri,
                         onIncomingHandled = { incomingUri = null },
-                        onOpen = { screen = Screen.Reader(it) },
+                        onOpen = {
+                            readerReturn = Screen.Library
+                            screen = Screen.Reader(it)
+                        },
+                        onOpenHighlights = { screen = Screen.Highlights(it) },
                         onNewText = { screen = Screen.Editor(null) },
                         onEditText = { screen = Screen.Editor(it) },
                     )
-                    is Screen.Reader -> {
+                    is Screen.Highlights -> {
                         BackHandler { screen = Screen.Library }
+                        HighlightsScreen(
+                            bookId = s.bookId,
+                            library = library,
+                            onBack = { screen = Screen.Library },
+                            onOpen = { highlight ->
+                                readerReturn = s
+                                screen = Screen.Reader(s.bookId, highlight)
+                            },
+                        )
+                    }
+                    is Screen.Reader -> {
+                        BackHandler { screen = readerReturn }
                         val book = library.find(s.bookId)
                         if (book == null) {
                             screen = Screen.Library
@@ -78,7 +109,9 @@ class MainActivity : ComponentActivity() {
                                 bookId = s.bookId,
                                 library = library,
                                 settings = settings,
-                                onBack = { screen = Screen.Library },
+                                dictionary = dictionary,
+                                jump = s.jump,
+                                onBack = { screen = readerReturn },
                             )
                         }
                     }
@@ -87,7 +120,10 @@ class MainActivity : ComponentActivity() {
                             library = library,
                             bookId = s.bookId,
                             initialText = s.initialText,
-                            onDone = { saved -> screen = if (saved != null) Screen.Reader(saved) else Screen.Library },
+                            onDone = { saved ->
+                                readerReturn = Screen.Library
+                                screen = if (saved != null) Screen.Reader(saved) else Screen.Library
+                            },
                         )
                     }
                 }

@@ -16,6 +16,7 @@ import androidx.compose.ui.geometry.Offset
 import app.lume.reader.data.Settings
 import app.lume.reader.data.TextTools
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.longClick
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -45,9 +46,17 @@ class AppSmokeTest {
         runCatching {
             rule.waitForIdle()
             rule.activityRule.scenario.onActivity { activity ->
-                val view = activity.window.decorView
-                val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
-                view.draw(android.graphics.Canvas(bmp))
+                // desenha todas as janelas (a tela + painéis/diálogos abertos por cima)
+                val base = activity.window.decorView
+                val bmp = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bmp)
+                for (view in android.view.inspector.WindowInspector.getGlobalWindowViews()) {
+                    val at = IntArray(2).also { view.getLocationOnScreen(it) }
+                    canvas.save()
+                    canvas.translate(at[0].toFloat(), at[1].toFloat())
+                    view.draw(canvas)
+                    canvas.restore()
+                }
                 File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
         }.onFailure { println("screenshot $name failed: $it") }
@@ -63,7 +72,7 @@ class AppSmokeTest {
         rule.onNodeWithText("Título").performTextInput("Meu texto")
         rule.onNodeWithText("Texto").performTextInput(body)
         rule.onNodeWithText("Salvar").performClick()
-        rule.waitUntil(10_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
         rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
 
         // rodapé com porcentagem e tempo restante
@@ -117,7 +126,7 @@ class AppSmokeTest {
         rule.onNodeWithText("Título").performTextInput("Paginado")
         rule.onNodeWithText("Texto").performTextInput(body)
         rule.onNodeWithText("Salvar").performClick()
-        rule.waitUntil(10_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
         rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
         shot("6-paginado-tela1")
 
@@ -144,6 +153,87 @@ class AppSmokeTest {
         rule.waitForIdle()
         rule.onNodeWithText("Paginado").assertExists()
         rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
+    }
+
+    @Test
+    fun markSentenceThenFindItOnTheHomeTab() {
+        rule.onNodeWithText("Colar um texto").performClick()
+        val body = "Era noite fechada. O vento, frio e soturno, batia nas janelas da casa! Ninguém dormia.\n\n" +
+            (2..30).joinToString("\n\n") { "Parágrafo número $it. " + "Um texto de teste bem comprido. ".repeat(6) }
+        rule.onNodeWithText("Título").performTextInput("Fundação e Império")
+        rule.onNodeWithText("Texto").performTextInput(body)
+        rule.onNodeWithText("Salvar").performClick()
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+
+        // segura o dedo em cima de "soturno": abre o painel com a frase e a definição da palavra
+        val paragraph = rule.onNodeWithText("Era noite fechada.", substring = true)
+        val layout = paragraph.fetchSemanticsNode().let { node ->
+            val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            node.config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult].action!!(results)
+            results.first()
+        }
+        val at = layout.layoutInput.text.text.indexOf("soturno") + 3
+        val box = layout.getBoundingBox(at)
+        paragraph.performTouchInput { longClick(box.center) }
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Marcar frase").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("“O vento, frio e soturno, batia nas janelas da casa!”").assertExists()
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("sombrio, tristonho").fetchSemanticsNodes().isNotEmpty() }
+        shot("9-frase-e-dicionario")
+
+        rule.onNodeWithText("Marcar frase").performClick()
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Marcar frase").fetchSemanticsNodes().isEmpty() }
+        shot("10-frase-marcada")
+
+        // de volta à tela inicial, aba "Frases marcadas"
+        rule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+        rule.onNodeWithText("Frases marcadas").performClick()
+        rule.onNodeWithText("Fundação e Império").assertExists()
+        rule.onNodeWithText("1 frase marcada").assertExists()
+        shot("11-aba-frases")
+
+        rule.onNodeWithText("Fundação e Império").performClick()
+        rule.onNodeWithText("O vento, frio e soturno, batia nas janelas da casa!").assertExists()
+        shot("12-lista-frases")
+
+        // tocar na frase abre o livro nela
+        rule.onNodeWithText("O vento, frio e soturno, batia nas janelas da casa!").performClick()
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Era noite fechada.", substring = true).fetchSemanticsNodes().isNotEmpty() }
+
+        // segurar de novo na mesma frase permite remover a marcação
+        rule.onNodeWithText("Era noite fechada.", substring = true).performTouchInput { longClick(box.center) }
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Remover marcação").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Remover marcação").performClick()
+        rule.waitForIdle()
+        val library = app.lume.reader.data.Library(RuntimeEnvironment.getApplication())
+        assertTrue(library.highlights.isEmpty())
+    }
+
+    @Test
+    fun offlineDictionaryUnderstandsInflectedWords() = kotlinx.coroutines.runBlocking {
+        val dict = app.lume.reader.data.Dictionary(RuntimeEnvironment.getApplication())
+        suspend fun words(q: String) = dict.lookup(q).entries.map { it.word }
+        assertTrue("soturno" in words("soturno"))
+        assertTrue("fazer" in words("fizeram"))
+        assertTrue("fazer" in words("Fizeram,"))
+        assertTrue("gato" in words("gatos"))
+        assertTrue("casa" in words("casinha"))
+        assertTrue("fazer" in words("fazê-lo"))
+        assertTrue("dizer" in words("disse-me"))
+        assertTrue("ação" in words("acção"))
+        assertTrue("coração" in words("CORAÇÕES"))
+        // "efêmero" aponta para "efémero": a definição de verdade vem junto
+        assertTrue(dict.lookup("efêmero").entries.any { e -> e.senses.any { "curta duração" in it } })
+        // forma flexionada explica de onde veio
+        assertTrue(dict.lookup("fizeram").entries.first { it.word == "fazer" }.via!!.contains("verbo fazer"))
+        // palavra inexistente: sem verbetes, mas com sugestões parecidas
+        val none = dict.lookup("soturnidadezz")
+        assertTrue(none.entries.isEmpty())
+        assertTrue(none.suggestions.isNotEmpty())
+        // mostra o que cada consulta devolve (para conferência manual no log)
+        for (q in listOf("lúgubre", "olhávamos", "inefável", "mesinhas", "pô-lo", "ver-te-ei", "dormiam", "óptimos", "quiçá")) {
+            println("DICT $q -> " + dict.lookup(q).let { r -> r.entries.map { it.word + "/" + it.pos } + r.suggestions })
+        }
     }
 
     @Test

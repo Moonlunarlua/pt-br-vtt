@@ -55,7 +55,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.LineHeightStyle
@@ -73,6 +83,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.lume.reader.data.Book
+import app.lume.reader.data.Dictionary
+import app.lume.reader.data.Highlight
+import app.lume.reader.data.WordForms
 import app.lume.reader.data.BookContent
 import app.lume.reader.data.BookType
 import app.lume.reader.data.Library
@@ -89,7 +102,15 @@ private const val SAMPLE_INTERVAL_MS = 5000L
 const val SIDE_TAP_FRACTION = 0.33f
 
 @Composable
-fun ReaderScreen(bookId: String, library: Library, settings: Settings, onBack: () -> Unit) {
+fun ReaderScreen(
+    bookId: String,
+    library: Library,
+    settings: Settings,
+    dictionary: Dictionary,
+    /** Frase marcada para onde o leitor deve pular ao abrir (vindo da aba "Frases marcadas"). */
+    jump: Highlight?,
+    onBack: () -> Unit,
+) {
     val colors = pageColors(settings.theme)
     val content by produceState<Result<BookContent>?>(initialValue = null, bookId) {
         value = runCatching { library.loadContent(bookId) }
@@ -107,7 +128,7 @@ fun ReaderScreen(bookId: String, library: Library, settings: Settings, onBack: (
                 Text("Não consegui abrir este livro.", color = colors.text)
                 TextButton(onClick = onBack) { Text("Voltar") }
             }
-            else -> ReaderContent(book, result.getOrThrow(), library, settings, onBack)
+            else -> ReaderContent(book, result.getOrThrow(), library, settings, dictionary, jump, onBack)
         }
     }
 }
@@ -139,6 +160,8 @@ private fun ReaderContent(
     content: BookContent,
     library: Library,
     settings: Settings,
+    dictionary: Dictionary,
+    jump: Highlight?,
     onBack: () -> Unit,
 ) {
     val colors = pageColors(settings.theme)
@@ -151,7 +174,7 @@ private fun ReaderContent(
         mutableStateOf(
             when {
                 !canShowText -> ViewMode.PAGES
-                !canShowPages -> ViewMode.TEXT
+                !canShowPages || jump != null -> ViewMode.TEXT
                 else -> initialBook.viewMode
             }
         )
@@ -159,10 +182,13 @@ private fun ReaderContent(
     var chrome by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var seeking by remember { mutableStateOf<Float?>(null) }
+    var selection by remember { mutableStateOf<TextSelection?>(null) }
+    val lastParagraph = (content.paragraphs.size - 1).coerceAtLeast(0)
+    val jumpTarget = jump?.takeIf { canShowText }
 
     val listState = rememberLazyListState(
-        initialFirstVisibleItemIndex = initialBook.paraIndex.coerceIn(0, (content.paragraphs.size - 1).coerceAtLeast(0)),
-        initialFirstVisibleItemScrollOffset = initialBook.paraOffset,
+        initialFirstVisibleItemIndex = (jumpTarget?.para ?: initialBook.paraIndex).coerceIn(0, lastParagraph),
+        initialFirstVisibleItemScrollOffset = if (jumpTarget != null) 0 else initialBook.paraOffset,
     )
     val pageCount = content.pageCount.coerceAtLeast(1)
     val pagerState = rememberPagerState(initialPage = initialBook.page.coerceIn(0, pageCount - 1)) { pageCount }
@@ -284,7 +310,30 @@ private fun ReaderContent(
     ) {
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (mode == ViewMode.TEXT) {
-                TextReader(content, listState, settings, chromeVisible = chrome, onMenuTap = { chrome = !chrome })
+                TextReader(
+                    content = content,
+                    listState = listState,
+                    settings = settings,
+                    highlights = library.highlightsOf(initialBook.id),
+                    jump = jumpTarget,
+                    chromeVisible = chrome,
+                    onMenuTap = { chrome = !chrome },
+                    onLongPress = { para, offset ->
+                        val text = content.paragraphs.getOrNull(para)
+                        if (text != null) {
+                            val sentence = WordForms.sentenceAt(text, offset)
+                            if (!sentence.isEmpty()) {
+                                selection = TextSelection(
+                                    para = para,
+                                    start = sentence.first,
+                                    end = sentence.last + 1,
+                                    sentence = text.substring(sentence.first, sentence.last + 1),
+                                    word = WordForms.wordAt(text, offset)?.let { text.substring(it.first, it.last + 1) },
+                                )
+                            }
+                        }
+                    },
+                )
             } else {
                 PdfPagesReader(
                     file = library.pdfFile(initialBook.id),
@@ -403,6 +452,25 @@ private fun ReaderContent(
     if (showSettings) {
         SettingsSheet(settings = settings, onDismiss = { showSettings = false })
     }
+
+    selection?.let { sel ->
+        SelectionSheet(
+            selection = sel,
+            existing = library.highlightsOf(initialBook.id)
+                .firstOrNull { it.para == sel.para && it.start < sel.end && sel.start < it.end },
+            dictionary = dictionary,
+            onMark = {
+                val page = if (canShowPages) content.pageOfParagraph(sel.para) + 1 else 0
+                library.addHighlight(initialBook.id, sel.para, sel.start, sel.end, sel.sentence, page)
+                selection = null
+            },
+            onUnmark = { id ->
+                library.removeHighlight(initialBook.id, id)
+                selection = null
+            },
+            onDismiss = { selection = null },
+        )
+    }
 }
 
 /** Pinça com dois dedos = aumentar/diminuir a letra. */
@@ -425,13 +493,95 @@ private fun Modifier.pinchToResizeFont(settings: Settings): Modifier = pointerIn
     }
 }
 
+/** Guarda onde cada parágrafo visível está na tela, para descobrir a palavra sob o dedo. */
+private class ParagraphRegistry {
+    val coords = HashMap<Int, LayoutCoordinates>()
+    val layouts = HashMap<Int, TextLayoutResult>()
+    var container: LayoutCoordinates? = null
+
+    /** (parágrafo, posição do caractere) no ponto [pos] da área de leitura, ou null. */
+    fun hit(pos: Offset): Pair<Int, Int>? {
+        val c = container?.takeIf { it.isAttached } ?: return null
+        for ((index, lc) in coords) {
+            if (!lc.isAttached) continue
+            val local = lc.localPositionOf(c, pos)
+            if (local.y < 0 || local.y > lc.size.height) continue
+            val layout = layouts[index] ?: return null
+            val x = local.x.coerceIn(0f, lc.size.width.toFloat())
+            return index to layout.getOffsetForPosition(Offset(x, local.y))
+        }
+        return null
+    }
+}
+
+@Composable
+private fun Paragraph(
+    index: Int,
+    text: String,
+    highlights: List<Highlight>?,
+    highlight: Color,
+    style: TextStyle,
+    registry: ParagraphRegistry,
+    modifier: Modifier,
+) {
+    val annotated = remember(text, highlights, highlight) {
+        if (highlights.isNullOrEmpty()) {
+            AnnotatedString(text)
+        } else {
+            buildAnnotatedString {
+                append(text)
+                for (h in highlights) {
+                    val start = h.start.coerceIn(0, text.length)
+                    val end = h.end.coerceIn(start, text.length)
+                    if (end > start) addStyle(SpanStyle(background = highlight), start, end)
+                }
+            }
+        }
+    }
+    DisposableEffect(index) {
+        onDispose {
+            registry.coords.remove(index)
+            registry.layouts.remove(index)
+        }
+    }
+    Text(
+        text = annotated,
+        style = style,
+        onTextLayout = { registry.layouts[index] = it },
+        modifier = modifier.onGloballyPositioned { registry.coords[index] = it },
+    )
+}
+
+/** Ao abrir numa frase marcada, desce até a linha onde ela começa dentro do parágrafo. */
+@Composable
+private fun JumpToSentence(jump: Highlight?, listState: LazyListState, registry: ParagraphRegistry) {
+    LaunchedEffect(jump?.id) {
+        if (jump == null) return@LaunchedEffect
+        repeat(40) {
+            val layout = registry.layouts[jump.para]
+            if (layout != null && listState.firstVisibleItemIndex == jump.para) {
+                if (listState.firstVisibleItemScrollOffset == 0) {
+                    val offset = jump.start.coerceIn(0, layout.layoutInput.text.length)
+                    val top = layout.getLineTop(layout.getLineForOffset(offset))
+                    if (top > 0f) listState.scrollBy(top)
+                }
+                return@LaunchedEffect
+            }
+            delay(25)
+        }
+    }
+}
+
 @Composable
 private fun TextReader(
     content: BookContent,
     listState: LazyListState,
     settings: Settings,
+    highlights: List<Highlight>,
+    jump: Highlight?,
     chromeVisible: Boolean,
     onMenuTap: () -> Unit,
+    onLongPress: (paragraph: Int, offset: Int) -> Unit,
 ) {
     val colors = pageColors(settings.theme)
     val baseStyle = TextStyle(
@@ -442,10 +592,22 @@ private fun TextReader(
         hyphens = if (settings.justify) Hyphens.Auto else Hyphens.None,
         lineBreak = LineBreak.Paragraph,
     )
+    val byParagraph = remember(highlights) { highlights.groupBy { it.para } }
+    val registry = remember { ParagraphRegistry() }
+    val haptics = LocalHapticFeedback.current
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
+    // segurar o dedo sobre o texto: marca a frase / consulta a palavra
+    val longPress: (Offset) -> Unit = { pos ->
+        registry.hit(pos)?.let { (paragraph, offset) ->
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            currentOnLongPress(paragraph, offset)
+        }
+    }
+    JumpToSentence(jump, listState, registry)
     if (settings.tapToTurn) {
-        PagedTextReader(content, listState, settings, baseStyle, chromeVisible, onMenuTap)
+        PagedTextReader(content, listState, settings, baseStyle, byParagraph, registry, chromeVisible, onMenuTap, longPress)
     } else {
-        ScrollingTextReader(content, listState, settings, baseStyle, onMenuTap)
+        ScrollingTextReader(content, listState, settings, baseStyle, byParagraph, registry, onMenuTap, longPress)
     }
 }
 
@@ -456,23 +618,35 @@ private fun ScrollingTextReader(
     listState: LazyListState,
     settings: Settings,
     baseStyle: TextStyle,
+    highlights: Map<Int, List<Highlight>>,
+    registry: ParagraphRegistry,
     onMenuTap: () -> Unit,
+    onLongPress: (Offset) -> Unit,
 ) {
     val fontSize = settings.fontSize
     val style = baseStyle.copy(lineHeight = (fontSize * settings.lineHeight).sp)
+    val highlight = highlightColor(settings.theme)
     val currentOnTap by rememberUpdatedState(onMenuTap)
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(horizontal = settings.margin.dp, vertical = 20.dp),
         modifier = Modifier
             .fillMaxSize()
             .pinchToResizeFont(settings)
-            .pointerInput(Unit) { detectTapGestures(onTap = { currentOnTap() }) },
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { currentOnTap() }, onLongPress = { currentOnLongPress(it) })
+            }
+            .onGloballyPositioned { registry.container = it },
     ) {
         items(count = content.paragraphs.size, key = { it }) { index ->
-            Text(
+            Paragraph(
+                index = index,
                 text = content.paragraphs[index],
+                highlights = highlights[index],
+                highlight = highlight,
                 style = style,
+                registry = registry,
                 modifier = Modifier.fillMaxWidth().padding(bottom = (fontSize * 0.7f).dp),
             )
         }
@@ -491,11 +665,15 @@ private fun PagedTextReader(
     listState: LazyListState,
     settings: Settings,
     baseStyle: TextStyle,
+    highlights: Map<Int, List<Highlight>>,
+    registry: ParagraphRegistry,
     chromeVisible: Boolean,
     onMenuTap: () -> Unit,
+    onLongPress: (Offset) -> Unit,
 ) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+    val highlight = highlightColor(settings.theme)
     val linePx = with(density) { (settings.fontSize * settings.lineHeight).sp.toPx() }.roundToInt().coerceAtLeast(1)
     val style = baseStyle.copy(
         // um tiquinho abaixo do inteiro: o Android arredonda a altura da linha para cima
@@ -524,6 +702,7 @@ private fun PagedTextReader(
         val currentTurn by rememberUpdatedState(::turn)
         val currentChrome by rememberUpdatedState(chromeVisible)
         val currentOnMenuTap by rememberUpdatedState(onMenuTap)
+        val currentOnLongPress by rememberUpdatedState(onLongPress)
 
         LazyColumn(
             state = listState,
@@ -538,15 +717,18 @@ private fun PagedTextReader(
                 .fillMaxWidth()
                 .pinchToResizeFont(settings)
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = { tap ->
-                        val x = tap.x / size.width
-                        when {
-                            currentChrome -> currentOnMenuTap()
-                            x < SIDE_TAP_FRACTION -> currentTurn(-1)
-                            x > 1 - SIDE_TAP_FRACTION -> currentTurn(1)
-                            else -> currentOnMenuTap()
-                        }
-                    })
+                    detectTapGestures(
+                        onLongPress = { currentOnLongPress(it) },
+                        onTap = { tap ->
+                            val x = tap.x / size.width
+                            when {
+                                currentChrome -> currentOnMenuTap()
+                                x < SIDE_TAP_FRACTION -> currentTurn(-1)
+                                x > 1 - SIDE_TAP_FRACTION -> currentTurn(1)
+                                else -> currentOnMenuTap()
+                            }
+                        },
+                    )
                 }
                 .pointerInput(Unit) {
                     // deslizar para os lados também vira a página
@@ -559,6 +741,7 @@ private fun PagedTextReader(
                         },
                     ) { _, amount -> total += amount }
                 }
+                .onGloballyPositioned { registry.container = it }
                 .padding(top = 20.dp)
                 // altura exata em pixels: número inteiro de linhas
                 .layout { measurable, c ->
@@ -569,7 +752,15 @@ private fun PagedTextReader(
                 },
         ) {
             items(count = content.paragraphs.size, key = { it }) { index ->
-                Text(text = content.paragraphs[index], style = style, modifier = Modifier.fillMaxWidth())
+                Paragraph(
+                    index = index,
+                    text = content.paragraphs[index],
+                    highlights = highlights[index],
+                    highlight = highlight,
+                    style = style,
+                    registry = registry,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }

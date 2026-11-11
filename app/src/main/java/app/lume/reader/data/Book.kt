@@ -106,3 +106,31 @@ class BookContent(
         }
     }
 }
+
+/** Uma frase marcada pelo leitor. [start]/[end] são posições dentro do parágrafo [para]. */
+data class Highlight(
+    val id: String,
+    val para: Int,
+    val start: Int,
+    val end: Int,
+    val text: String,
+    /** Página do PDF (começando em 1) onde a frase está; 0 para textos sem páginas. */
+    val page: Int = 0,
+    val createdAt: Long = 0,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("id", id).put("para", para).put("start", start).put("end", end)
+        .put("text", text).put("page", page).put("createdAt", createdAt)
+
+    companion object {
+        fun fromJson(o: JSONObject) = Highlight(
+            id = o.getString("id"),
+            para = o.optInt("para"),
+            start = o.optInt("start"),
+            end = o.optInt("end"),
+            text = o.optString("text"),
+            page = o.optInt("page"),
+            createdAt = o.optLong("createdAt"),
+        )
+    }
+}
