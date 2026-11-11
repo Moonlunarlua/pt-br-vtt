@@ -13,7 +13,9 @@ App Android (Kotlin + Jetpack Compose) para ler PDFs e textos, no estilo Kindle 
   - *Rolar a tela*: arrasta o texto para cima e para baixo.
   - *Tocar nas laterais*: uma tela por vez, como no Kindle — toque na direita avança, na esquerda volta
     (ou deslize para os lados); toque no meio abre o menu. Vale também para as páginas do PDF.
-- **Frases marcadas**: no modo texto, segure o dedo sobre uma frase e toque em *Marcar frase*; ela fica destacada.
+- **Frases marcadas**: no modo texto, segure o dedo sobre uma frase e solte — o app seleciona a frase inteira
+  sozinho; toque em *Marcar frase* e ela fica destacada. Para escolher você mesmo o trecho (só uma parte da frase,
+  ou mais de uma frase do mesmo parágrafo), segure o dedo na primeira palavra e **arraste** até a última antes de soltar.
   Na tela inicial, a aba *Frases marcadas* lista os livros ("Fundação e Império — 5 frases marcadas"); tocando no
   livro aparecem as frases em tópicos, e tocar numa frase abre o livro exatamente nela.
 - **Dicionário offline**: o mesmo toque longo mostra a definição da palavra que estava sob o dedo, e a aba

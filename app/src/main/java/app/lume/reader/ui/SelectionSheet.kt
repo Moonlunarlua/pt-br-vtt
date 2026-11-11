@@ -53,6 +53,8 @@ data class TextSelection(
     val end: Int,
     val sentence: String,
     val word: String?,
+    /** true = o leitor escolheu o trecho arrastando o dedo; false = frase detectada automaticamente. */
+    val manual: Boolean = false,
 )
 
 /** Painel que abre ao segurar o dedo numa frase: marcar/desmarcar a frase e consultar o dicionário. */
@@ -88,11 +90,20 @@ fun SelectionSheet(
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (existing == null) {
-                    Button(onClick = onMark) { Text("Marcar frase") }
+                    Button(onClick = onMark) { Text(if (selection.manual) "Marcar trecho" else "Marcar frase") }
                 } else {
                     Button(onClick = { onUnmark(existing.id) }) { Text("Remover marcação") }
                 }
                 OutlinedButton(onClick = { clipboard.setText(AnnotatedString(selection.sentence)) }) { Text("Copiar") }
+            }
+            if (!selection.manual && existing == null) {
+                Text(
+                    "Quer marcar só uma parte, ou outro trecho? Feche, segure o dedo na primeira palavra " +
+                        "e arraste até a última antes de soltar.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
             DictionaryPanel(dictionary = dictionary, initialWord = selection.word.orEmpty())

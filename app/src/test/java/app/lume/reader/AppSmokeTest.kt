@@ -16,6 +16,8 @@ import androidx.compose.ui.geometry.Offset
 import app.lume.reader.data.Settings
 import app.lume.reader.data.TextTools
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.longClick
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -62,6 +64,21 @@ class AppSmokeTest {
         }.onFailure { println("screenshot $name failed: $it") }
     }
 
+    /** Espera o leitor abrir depois de salvar um texto; se não abrir, mostra o que está na tela. */
+    private fun waitForReader() {
+        try {
+            rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        } catch (e: Throwable) {
+            println("TELA NO MOMENTO DA FALHA:\n" + rule.onAllNodes(isRoot()).printToString(maxDepth = 40))
+            for ((thread, stack) in Thread.getAllStackTraces()) {
+                if (stack.any { it.className.startsWith("app.lume") || it.className.contains("coroutines") }) {
+                    println("THREAD ${thread.name} ${thread.state}\n" + stack.take(25).joinToString("\n") { "    $it" })
+                }
+            }
+            throw e
+        }
+    }
+
     @Test
     fun writeTextThenReadIt() {
         rule.onNodeWithText("Sua biblioteca está vazia").assertExists()
@@ -72,7 +89,7 @@ class AppSmokeTest {
         rule.onNodeWithText("Título").performTextInput("Meu texto")
         rule.onNodeWithText("Texto").performTextInput(body)
         rule.onNodeWithText("Salvar").performClick()
-        rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        waitForReader()
         rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
 
         // rodapé com porcentagem e tempo restante
@@ -126,7 +143,7 @@ class AppSmokeTest {
         rule.onNodeWithText("Título").performTextInput("Paginado")
         rule.onNodeWithText("Texto").performTextInput(body)
         rule.onNodeWithText("Salvar").performClick()
-        rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        waitForReader()
         rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
         shot("6-paginado-tela1")
 
@@ -163,7 +180,7 @@ class AppSmokeTest {
         rule.onNodeWithText("Título").performTextInput("Fundação e Império")
         rule.onNodeWithText("Texto").performTextInput(body)
         rule.onNodeWithText("Salvar").performClick()
-        rule.waitUntil(30_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        waitForReader()
 
         // segura o dedo em cima de "soturno": abre o painel com a frase e a definição da palavra
         val paragraph = rule.onNodeWithText("Era noite fechada.", substring = true)
@@ -207,6 +224,59 @@ class AppSmokeTest {
         rule.waitForIdle()
         val library = app.lume.reader.data.Library(RuntimeEnvironment.getApplication())
         assertTrue(library.highlights.isEmpty())
+    }
+
+    @Test
+    fun holdAndDragSelectsACustomRange() {
+        rule.onNodeWithText("Colar um texto").performClick()
+        val body = "Era noite fechada. O vento, frio e soturno, batia nas janelas da casa! Ninguém dormia.\n\n" +
+            (2..30).joinToString("\n\n") { "Parágrafo número $it. " + "Um texto de teste bem comprido. ".repeat(6) }
+        rule.onNodeWithText("Título").performTextInput("Trecho manual")
+        rule.onNodeWithText("Texto").performTextInput(body)
+        rule.onNodeWithText("Salvar").performClick()
+        waitForReader()
+
+        val paragraph = rule.onNodeWithText("Era noite fechada.", substring = true)
+        val layout = paragraph.fetchSemanticsNode().let { node ->
+            val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            node.config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult].action!!(results)
+            results.first()
+        }
+        val text = layout.layoutInput.text.text
+        val from = layout.getBoundingBox(text.indexOf("frio") + 1).center
+        val to = layout.getBoundingBox(text.indexOf("janelas") + 3).center
+
+        // segura em "frio", arrasta até "janelas" e solta: o trecho vai de uma palavra à outra
+        paragraph.performTouchInput { down(from) }
+        rule.mainClock.advanceTimeBy(1_000)
+        paragraph.performTouchInput { moveTo(to) }
+        rule.waitForIdle()
+        shot("13-arrastando")
+        paragraph.performTouchInput { up() }
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Marcar trecho").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("“frio e soturno, batia nas janelas”").assertExists()
+        shot("14-trecho-manual")
+        rule.onNodeWithText("Marcar trecho").performClick()
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Marcar trecho").fetchSemanticsNodes().isEmpty() }
+        shot("15-trecho-marcado")
+
+        val saved = app.lume.reader.data.Library(RuntimeEnvironment.getApplication()).highlights.values.single().single()
+        assertEquals("frio e soturno, batia nas janelas", saved.text)
+
+        // arrastar para trás também funciona: de "dormia" até "Ninguém"
+        val back = layout.getBoundingBox(text.indexOf("dormia") + 2).center
+        val front = layout.getBoundingBox(text.indexOf("Ninguém") + 1).center
+        paragraph.performTouchInput { down(back) }
+        rule.mainClock.advanceTimeBy(1_000)
+        paragraph.performTouchInput { moveTo(front) }
+        paragraph.performTouchInput { up() }
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Marcar trecho").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("“Ninguém dormia.”").assertExists()
+
+        // espera a consulta ao dicionário terminar e fecha o painel, para o teste acabar com a tela parada
+        rule.waitUntil(30_000) { rule.onAllNodesWithText("Definições do Wikcionário (CC BY-SA 4.0).").fetchSemanticsNodes().isNotEmpty() }
+        rule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
     }
 
     @Test

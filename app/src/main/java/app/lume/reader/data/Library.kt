@@ -122,28 +122,31 @@ class Library(context: Context) {
     }
 
     /** Cria (ou substitui, se [existingId] != null) um livro a partir de texto digitado/colado. */
-    suspend fun saveText(title: String, text: String, existingId: String? = null): Book =
-        withContext(Dispatchers.IO) {
-            val paragraphs = TextTools.plainTextToParagraphs(text)
-            if (paragraphs.isEmpty()) throw ImportException("O texto está vazio.")
-            val content = BookContent(paragraphs, IntArray(0), 0)
-            val old = existingId?.let { find(it) }
-            val id = old?.id ?: UUID.randomUUID().toString()
-            writeContent(id, content)
-            File(dir(id), "source.txt").writeText(text)
-            val now = System.currentTimeMillis()
-            val book = (old ?: Book(id = id, title = title, type = BookType.TEXT, addedAt = now)).copy(
-                title = title.ifBlank { "Sem título" },
-                totalWords = content.totalWords,
-                hasText = true,
-                paraIndex = (old?.paraIndex ?: 0).coerceAtMost(paragraphs.size - 1),
-            )
-            withContext(Dispatchers.Main) {
-                save(book)
-                if (old != null) relocateHighlights(id, paragraphs)
-            }
-            book
-        }
+    suspend fun saveText(title: String, text: String, existingId: String? = null): Book {
+        val (book, paragraphs) = withContext(Dispatchers.IO) { writeTextBook(title, text, existingId) }
+        save(book)
+        if (existingId != null) relocateHighlights(book.id, paragraphs)
+        return book
+    }
+
+    /** Grava os arquivos de um livro de texto e devolve o livro (ainda não registrado em [books]). */
+    private fun writeTextBook(title: String, text: String, existingId: String?): Pair<Book, List<String>> {
+        val paragraphs = TextTools.plainTextToParagraphs(text)
+        if (paragraphs.isEmpty()) throw ImportException("O texto está vazio.")
+        val content = BookContent(paragraphs, IntArray(0), 0)
+        val old = existingId?.let { find(it) }
+        val id = old?.id ?: UUID.randomUUID().toString()
+        writeContent(id, content)
+        File(dir(id), "source.txt").writeText(text)
+        val now = System.currentTimeMillis()
+        val book = (old ?: Book(id = id, title = title, type = BookType.TEXT, addedAt = now)).copy(
+            title = title.ifBlank { "Sem título" },
+            totalWords = content.totalWords,
+            hasText = true,
+            paraIndex = (old?.paraIndex ?: 0).coerceAtMost(paragraphs.size - 1),
+        )
+        return book to paragraphs
+    }
 
     /** Texto original de um livro de texto, para edição. */
     suspend fun loadSourceText(id: String): String = withContext(Dispatchers.IO) {
@@ -152,13 +155,20 @@ class Library(context: Context) {
     }
 
     /** Importa um arquivo escolhido pelo usuário (PDF ou texto). [onProgress] vai de 0 a 1. */
-    suspend fun importUri(uri: Uri, onProgress: (Float) -> Unit): Book = withContext(Dispatchers.IO) {
+    suspend fun importUri(uri: Uri, onProgress: (Float) -> Unit): Book {
+        val book = withContext(Dispatchers.IO) { readUri(uri, onProgress) }
+        save(book)
+        return book
+    }
+
+    /** Lê o arquivo e grava os dados do livro no armazenamento do app (sem registrá-lo em [books]). */
+    private fun readUri(uri: Uri, onProgress: (Float) -> Unit): Book {
         val resolver = appContext.contentResolver
         val name = displayName(uri)
         val mime = resolver.getType(uri).orEmpty()
         val id = UUID.randomUUID().toString()
         val tmp = File(appContext.cacheDir, "import-$id")
-        try {
+        return try {
             (resolver.openInputStream(uri) ?: throw ImportException("Não consegui abrir o arquivo."))
                 .use { input -> tmp.outputStream().use { input.copyTo(it) } }
             val isPdf = mime == "application/pdf" || name.endsWith(".pdf", ignoreCase = true) || looksLikePdf(tmp)
@@ -171,7 +181,7 @@ class Library(context: Context) {
                 if (text.count { it == '\u0000' } > 0) {
                     throw ImportException("Esse formato não é suportado. Use PDF ou texto (.txt).")
                 }
-                saveText(title, text)
+                writeTextBook(title, text, null).first
             }
         } catch (e: ImportException) {
             dir(id).deleteRecursively()
@@ -187,7 +197,7 @@ class Library(context: Context) {
         }
     }
 
-    private suspend fun importPdf(id: String, title: String, tmp: File, onProgress: (Float) -> Unit): Book {
+    private fun importPdf(id: String, title: String, tmp: File, onProgress: (Float) -> Unit): Book {
         dir(id).mkdirs()
         val pdf = pdfFile(id)
         tmp.copyTo(pdf, overwrite = true)
@@ -248,7 +258,7 @@ class Library(context: Context) {
             BookContent(emptyList(), IntArray(0), pageCount)
         }
         writeContent(id, content)
-        val book = Book(
+        return Book(
             id = id,
             title = title,
             type = BookType.PDF,
@@ -258,8 +268,6 @@ class Library(context: Context) {
             addedAt = System.currentTimeMillis(),
             viewMode = if (hasText) ViewMode.TEXT else ViewMode.PAGES,
         )
-        withContext(Dispatchers.Main) { save(book) }
-        return book
     }
 
     private fun looksLikePdf(f: File): Boolean = runCatching {

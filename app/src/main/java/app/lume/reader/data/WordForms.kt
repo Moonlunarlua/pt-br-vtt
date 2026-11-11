@@ -57,6 +57,21 @@ object WordForms {
         return start until end
     }
 
+    /**
+     * Ajusta um trecho escolhido à mão para começar e terminar em "pedaços" inteiros (separados por
+     * espaço), levando junto a pontuação grudada: «casa!» e não «casa».
+     */
+    fun snapToTokens(text: String, start: Int, endExclusive: Int): IntRange {
+        if (text.isEmpty()) return IntRange.EMPTY
+        var s = start.coerceIn(0, text.length - 1)
+        var e = endExclusive.coerceIn(s + 1, text.length)
+        while (s > 0 && !text[s - 1].isWhitespace()) s--
+        while (e < text.length && !text[e].isWhitespace()) e++
+        while (s < e && text[s].isWhitespace()) s++
+        while (e > s && text[e - 1].isWhitespace()) e--
+        return s until e
+    }
+
     private val clitics = setOf(
         "me", "te", "se", "nos", "vos", "lhe", "lhes", "o", "a", "os", "as", "lo", "la", "los", "las",
         "no", "na", "nas", "mo", "ma", "mos", "mas", "to", "ta", "tos", "tas", "lho", "lha", "lhos", "lhas",

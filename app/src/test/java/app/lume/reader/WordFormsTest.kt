@@ -43,6 +43,17 @@ class WordFormsTest {
     }
 
     @Test
+    fun manualRangeSnapsToWholeTokens() {
+        val text = "Era noite. O vento, frio e soturno, batia nas janelas!"
+        fun snap(a: String, b: String) =
+            WordForms.snapToTokens(text, text.indexOf(a), text.indexOf(b) + b.length).let { text.substring(it.first, it.last + 1) }
+        assertEquals("frio e soturno,", snap("frio", "soturno"))
+        assertEquals("batia nas janelas!", snap("atia", "janel")) // começou/terminou no meio das palavras
+        assertEquals("vento,", snap("vento", "vento"))
+        assertTrue(WordForms.snapToTokens("", 0, 0).isEmpty())
+    }
+
+    @Test
     fun guessesDictionaryForms() {
         fun has(word: String, expected: String) =
             assertTrue("$word -> $expected", WordForms.key(expected) in WordForms.candidates(WordForms.key(word)))

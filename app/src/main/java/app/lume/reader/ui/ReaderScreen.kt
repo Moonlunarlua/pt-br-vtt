@@ -94,6 +94,7 @@ import app.lume.reader.data.TextTools
 import app.lume.reader.data.ViewMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
 private const val SAMPLE_INTERVAL_MS = 5000L
@@ -318,19 +319,10 @@ private fun ReaderContent(
                     jump = jumpTarget,
                     chromeVisible = chrome,
                     onMenuTap = { chrome = !chrome },
-                    onLongPress = { para, offset ->
+                    onSelect = { para, start, end, word, manual ->
                         val text = content.paragraphs.getOrNull(para)
-                        if (text != null) {
-                            val sentence = WordForms.sentenceAt(text, offset)
-                            if (!sentence.isEmpty()) {
-                                selection = TextSelection(
-                                    para = para,
-                                    start = sentence.first,
-                                    end = sentence.last + 1,
-                                    sentence = text.substring(sentence.first, sentence.last + 1),
-                                    word = WordForms.wordAt(text, offset)?.let { text.substring(it.first, it.last + 1) },
-                                )
-                            }
+                        if (text != null && end > start) {
+                            selection = TextSelection(para, start, end, text.substring(start, end), word, manual)
                         }
                     },
                 )
@@ -512,6 +504,62 @@ private class ParagraphRegistry {
         }
         return null
     }
+
+    /** Posição do caractere mais próximo de [pos] dentro do parágrafo [index] (mesmo com o dedo fora dele). */
+    fun offsetIn(index: Int, pos: Offset): Int? {
+        val c = container?.takeIf { it.isAttached } ?: return null
+        val lc = coords[index]?.takeIf { it.isAttached } ?: return null
+        val layout = layouts[index] ?: return null
+        val local = lc.localPositionOf(c, pos)
+        return layout.getOffsetForPosition(
+            Offset(local.x.coerceIn(0f, lc.size.width.toFloat()), local.y.coerceIn(0f, lc.size.height.toFloat()))
+        )
+    }
+}
+
+/** Trecho que o leitor está escolhendo com o dedo (ainda não confirmado). */
+private data class LiveSelection(
+    val para: Int,
+    /** Palavra onde o dedo pousou; o trecho manual sempre a inclui. */
+    val anchor: IntRange,
+    val range: IntRange,
+    /** false = frase detectada automaticamente; true = o leitor arrastou para escolher o trecho. */
+    val manual: Boolean,
+)
+
+/**
+ * Segurar o dedo inicia a seleção; arrastar sem soltar ajusta o trecho; soltar confirma.
+ * Roda na passagem inicial dos eventos para que o arrasto não role o texto nem vire a página.
+ */
+private fun Modifier.longPressSelect(
+    onStart: (Offset) -> Boolean,
+    onMove: (Offset) -> Unit,
+    onEnd: () -> Unit,
+): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var aborted = false
+        withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            while (!aborted) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (event.changes.size > 1 || change == null || !change.pressed ||
+                    (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+                ) {
+                    aborted = true
+                }
+            }
+        }
+        if (aborted || !onStart(down.position)) return@awaitEachGesture
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            event.changes.forEach { it.consume() }
+            val change = event.changes.firstOrNull { it.id == down.id }
+            if (change == null || !change.pressed) break
+            onMove(change.position)
+        }
+        onEnd()
+    }
 }
 
 @Composable
@@ -520,20 +568,29 @@ private fun Paragraph(
     text: String,
     highlights: List<Highlight>?,
     highlight: Color,
+    live: IntRange?,
+    liveColor: Color,
     style: TextStyle,
     registry: ParagraphRegistry,
     modifier: Modifier,
 ) {
-    val annotated = remember(text, highlights, highlight) {
-        if (highlights.isNullOrEmpty()) {
+    val annotated = remember(text, highlights, highlight, live, liveColor) {
+        if (highlights.isNullOrEmpty() && live == null) {
             AnnotatedString(text)
         } else {
             buildAnnotatedString {
                 append(text)
-                for (h in highlights) {
+                for (h in highlights.orEmpty()) {
                     val start = h.start.coerceIn(0, text.length)
                     val end = h.end.coerceIn(start, text.length)
                     if (end > start) addStyle(SpanStyle(background = highlight), start, end)
+                }
+                if (live != null && !live.isEmpty()) {
+                    addStyle(
+                        SpanStyle(background = liveColor),
+                        live.first.coerceIn(0, text.length),
+                        (live.last + 1).coerceIn(0, text.length),
+                    )
                 }
             }
         }
@@ -581,7 +638,7 @@ private fun TextReader(
     jump: Highlight?,
     chromeVisible: Boolean,
     onMenuTap: () -> Unit,
-    onLongPress: (paragraph: Int, offset: Int) -> Unit,
+    onSelect: (paragraph: Int, start: Int, end: Int, word: String?, manual: Boolean) -> Unit,
 ) {
     val colors = pageColors(settings.theme)
     val baseStyle = TextStyle(
@@ -595,19 +652,61 @@ private fun TextReader(
     val byParagraph = remember(highlights) { highlights.groupBy { it.para } }
     val registry = remember { ParagraphRegistry() }
     val haptics = LocalHapticFeedback.current
-    val currentOnLongPress by rememberUpdatedState(onLongPress)
-    // segurar o dedo sobre o texto: marca a frase / consulta a palavra
-    val longPress: (Offset) -> Unit = { pos ->
-        registry.hit(pos)?.let { (paragraph, offset) ->
-            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-            currentOnLongPress(paragraph, offset)
-        }
-    }
+    val currentOnSelect by rememberUpdatedState(onSelect)
+    var live by remember { mutableStateOf<LiveSelection?>(null) }
+    val liveColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+
+    // Segurar o dedo: seleciona a frase inteira. Arrastar sem soltar: o leitor escolhe o trecho,
+    // palavra por palavra, a partir de onde o dedo pousou. Soltar abre o painel de marcar/dicionário.
+    val selectGesture = Modifier.longPressSelect(
+        onStart = { pos ->
+            val hit = registry.hit(pos)
+            val text = hit?.let { content.paragraphs.getOrNull(it.first) }
+            if (hit == null || text.isNullOrEmpty()) {
+                false
+            } else {
+                val offset = hit.second.coerceIn(0, text.length - 1)
+                val sentence = WordForms.sentenceAt(text, offset)
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                live = LiveSelection(hit.first, WordForms.wordAt(text, offset) ?: (offset..offset), sentence, manual = false)
+                !sentence.isEmpty()
+            }
+        },
+        onMove = { pos ->
+            val current = live
+            val text = current?.let { content.paragraphs.getOrNull(it.para) }
+            val offset = current?.let { registry.offsetIn(it.para, pos) }
+            if (current != null && text != null && offset != null) {
+                val word = WordForms.wordAt(text, offset) ?: (offset.coerceIn(0, text.length - 1)).let { it..it }
+                val sameWord = word.first <= current.anchor.last && current.anchor.first <= word.last
+                if (current.manual || !sameWord) {
+                    val range = WordForms.snapToTokens(
+                        text,
+                        minOf(word.first, current.anchor.first),
+                        maxOf(word.last, current.anchor.last) + 1,
+                    )
+                    if (range != current.range || !current.manual) {
+                        if (range != current.range) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        live = current.copy(range = range, manual = true)
+                    }
+                }
+            }
+        },
+        onEnd = {
+            val done = live
+            live = null
+            val text = done?.let { content.paragraphs.getOrNull(it.para) }
+            if (done != null && text != null && !done.range.isEmpty()) {
+                val word = done.anchor.takeIf { text[it.first].isLetterOrDigit() }?.let { text.substring(it.first, it.last + 1) }
+                currentOnSelect(done.para, done.range.first, done.range.last + 1, word, done.manual)
+            }
+        },
+    )
     JumpToSentence(jump, listState, registry)
     if (settings.tapToTurn) {
-        PagedTextReader(content, listState, settings, baseStyle, byParagraph, registry, chromeVisible, onMenuTap, longPress)
+        PagedTextReader(content, listState, settings, baseStyle, byParagraph, live, liveColor, registry, chromeVisible, onMenuTap, selectGesture)
     } else {
-        ScrollingTextReader(content, listState, settings, baseStyle, byParagraph, registry, onMenuTap, longPress)
+        ScrollingTextReader(content, listState, settings, baseStyle, byParagraph, live, liveColor, registry, onMenuTap, selectGesture)
     }
 }
 
@@ -619,24 +718,24 @@ private fun ScrollingTextReader(
     settings: Settings,
     baseStyle: TextStyle,
     highlights: Map<Int, List<Highlight>>,
+    live: LiveSelection?,
+    liveColor: Color,
     registry: ParagraphRegistry,
     onMenuTap: () -> Unit,
-    onLongPress: (Offset) -> Unit,
+    selectGesture: Modifier,
 ) {
     val fontSize = settings.fontSize
     val style = baseStyle.copy(lineHeight = (fontSize * settings.lineHeight).sp)
     val highlight = highlightColor(settings.theme)
     val currentOnTap by rememberUpdatedState(onMenuTap)
-    val currentOnLongPress by rememberUpdatedState(onLongPress)
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(horizontal = settings.margin.dp, vertical = 20.dp),
         modifier = Modifier
             .fillMaxSize()
             .pinchToResizeFont(settings)
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { currentOnTap() }, onLongPress = { currentOnLongPress(it) })
-            }
+            .then(selectGesture)
+            .pointerInput(Unit) { detectTapGestures(onTap = { currentOnTap() }) }
             .onGloballyPositioned { registry.container = it },
     ) {
         items(count = content.paragraphs.size, key = { it }) { index ->
@@ -645,6 +744,8 @@ private fun ScrollingTextReader(
                 text = content.paragraphs[index],
                 highlights = highlights[index],
                 highlight = highlight,
+                live = live?.takeIf { it.para == index }?.range,
+                liveColor = liveColor,
                 style = style,
                 registry = registry,
                 modifier = Modifier.fillMaxWidth().padding(bottom = (fontSize * 0.7f).dp),
@@ -666,10 +767,12 @@ private fun PagedTextReader(
     settings: Settings,
     baseStyle: TextStyle,
     highlights: Map<Int, List<Highlight>>,
+    live: LiveSelection?,
+    liveColor: Color,
     registry: ParagraphRegistry,
     chromeVisible: Boolean,
     onMenuTap: () -> Unit,
-    onLongPress: (Offset) -> Unit,
+    selectGesture: Modifier,
 ) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
@@ -702,7 +805,6 @@ private fun PagedTextReader(
         val currentTurn by rememberUpdatedState(::turn)
         val currentChrome by rememberUpdatedState(chromeVisible)
         val currentOnMenuTap by rememberUpdatedState(onMenuTap)
-        val currentOnLongPress by rememberUpdatedState(onLongPress)
 
         LazyColumn(
             state = listState,
@@ -716,9 +818,9 @@ private fun PagedTextReader(
             modifier = Modifier
                 .fillMaxWidth()
                 .pinchToResizeFont(settings)
+                .then(selectGesture)
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onLongPress = { currentOnLongPress(it) },
                         onTap = { tap ->
                             val x = tap.x / size.width
                             when {
@@ -757,6 +859,8 @@ private fun PagedTextReader(
                     text = content.paragraphs[index],
                     highlights = highlights[index],
                     highlight = highlight,
+                    live = live?.takeIf { it.para == index }?.range,
+                    liveColor = liveColor,
                     style = style,
                     registry = registry,
                     modifier = Modifier.fillMaxWidth(),
