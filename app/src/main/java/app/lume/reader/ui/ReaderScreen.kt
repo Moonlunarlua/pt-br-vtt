@@ -10,7 +10,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -52,7 +55,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextIndent
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.Hyphens
 import androidx.compose.ui.text.style.LineBreak
@@ -75,6 +84,9 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private const val SAMPLE_INTERVAL_MS = 5000L
+
+/** Fração da largura, em cada lateral, que vira a página no modo "tocar nas laterais". */
+const val SIDE_TAP_FRACTION = 0.33f
 
 @Composable
 fun ReaderScreen(bookId: String, library: Library, settings: Settings, onBack: () -> Unit) {
@@ -109,6 +121,16 @@ private fun textWordPos(content: BookContent, state: LazyListState): Double {
     val inside = content.cumWords[index + 1] - content.cumWords[index]
     val fraction = if (size > 0) (state.firstVisibleItemScrollOffset.toDouble() / size).coerceIn(0.0, 1.0) else 0.0
     return before + inside * fraction
+}
+
+/** O fim do último parágrafo já está visível na tela? */
+private fun textAtEnd(state: LazyListState, paged: Boolean): Boolean {
+    val info = state.layoutInfo
+    val last = info.visibleItemsInfo.lastOrNull() ?: return false
+    if (last.index != info.totalItemsCount - 1) return false
+    // no modo paginado o espaço depois do texto é só para a última linha poder subir ao topo
+    val limit = info.viewportEndOffset - if (paged) 0 else info.afterContentPadding
+    return last.offset + last.size <= limit + 1
 }
 
 @Composable
@@ -163,7 +185,7 @@ private fun ReaderContent(
         derivedStateOf {
             if (mode == ViewMode.PAGES) {
                 content.wordsBeforePage(pagerState.currentPage + 1).toFloat() / totalWords
-            } else if (!listState.canScrollForward && listState.layoutInfo.totalItemsCount > 0) {
+            } else if (textAtEnd(listState, settings.tapToTurn)) {
                 1f
             } else {
                 (textWordPos(content, listState) / totalWords).toFloat()
@@ -262,13 +284,22 @@ private fun ReaderContent(
     ) {
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             if (mode == ViewMode.TEXT) {
-                TextReader(content, listState, settings, onTap = { chrome = !chrome })
+                TextReader(content, listState, settings, chromeVisible = chrome, onMenuTap = { chrome = !chrome })
             } else {
                 PdfPagesReader(
                     file = library.pdfFile(initialBook.id),
                     pagerState = pagerState,
                     theme = settings.theme,
-                    onTap = { chrome = !chrome },
+                    onTap = { x, zoomed ->
+                        val side = settings.tapToTurn && !chrome && !zoomed
+                        when {
+                            side && x < SIDE_TAP_FRACTION && pagerState.currentPage > 0 ->
+                                scope.launch { pagerState.scrollToPage(pagerState.currentPage - 1) }
+                            side && x > 1 - SIDE_TAP_FRACTION && pagerState.currentPage < pageCount - 1 ->
+                                scope.launch { pagerState.scrollToPage(pagerState.currentPage + 1) }
+                            else -> chrome = !chrome
+                        }
+                    },
                 )
             }
 
@@ -374,44 +405,68 @@ private fun ReaderContent(
     }
 }
 
+/** Pinça com dois dedos = aumentar/diminuir a letra. */
+private fun Modifier.pinchToResizeFont(settings: Settings): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var pinched = false
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.count { it.pressed } >= 2) {
+                val zoom = event.calculateZoom()
+                if (zoom != 1f) {
+                    settings.fontSize = (settings.fontSize * zoom).coerceIn(MIN_FONT_SIZE, MAX_FONT_SIZE)
+                    pinched = true
+                }
+                event.changes.forEach { it.consume() }
+            }
+        } while (event.changes.any { it.pressed })
+        if (pinched) settings.persist()
+    }
+}
+
 @Composable
-private fun TextReader(content: BookContent, listState: LazyListState, settings: Settings, onTap: () -> Unit) {
+private fun TextReader(
+    content: BookContent,
+    listState: LazyListState,
+    settings: Settings,
+    chromeVisible: Boolean,
+    onMenuTap: () -> Unit,
+) {
     val colors = pageColors(settings.theme)
-    val fontSize = settings.fontSize
-    val style = TextStyle(
+    val baseStyle = TextStyle(
         color = colors.text,
         fontFamily = settings.fontFamily,
-        fontSize = fontSize.sp,
-        lineHeight = (fontSize * settings.lineHeight).sp,
+        fontSize = settings.fontSize.sp,
         textAlign = if (settings.justify) TextAlign.Justify else TextAlign.Start,
         hyphens = if (settings.justify) Hyphens.Auto else Hyphens.None,
         lineBreak = LineBreak.Paragraph,
     )
-    val currentOnTap by rememberUpdatedState(onTap)
+    if (settings.tapToTurn) {
+        PagedTextReader(content, listState, settings, baseStyle, chromeVisible, onMenuTap)
+    } else {
+        ScrollingTextReader(content, listState, settings, baseStyle, onMenuTap)
+    }
+}
+
+/** Rolagem contínua: arrasta o texto para cima e para baixo. */
+@Composable
+private fun ScrollingTextReader(
+    content: BookContent,
+    listState: LazyListState,
+    settings: Settings,
+    baseStyle: TextStyle,
+    onMenuTap: () -> Unit,
+) {
+    val fontSize = settings.fontSize
+    val style = baseStyle.copy(lineHeight = (fontSize * settings.lineHeight).sp)
+    val currentOnTap by rememberUpdatedState(onMenuTap)
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(horizontal = settings.margin.dp, vertical = 20.dp),
         modifier = Modifier
             .fillMaxSize()
-            // pinça com dois dedos = aumentar/diminuir a letra
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    var pinched = false
-                    do {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.changes.count { it.pressed } >= 2) {
-                            val zoom = event.calculateZoom()
-                            if (zoom != 1f) {
-                                settings.fontSize = (settings.fontSize * zoom).coerceIn(MIN_FONT_SIZE, MAX_FONT_SIZE)
-                                pinched = true
-                            }
-                            event.changes.forEach { it.consume() }
-                        }
-                    } while (event.changes.any { it.pressed })
-                    if (pinched) settings.persist()
-                }
-            }
+            .pinchToResizeFont(settings)
             .pointerInput(Unit) { detectTapGestures(onTap = { currentOnTap() }) },
     ) {
         items(count = content.paragraphs.size, key = { it }) { index ->
@@ -420,6 +475,102 @@ private fun TextReader(content: BookContent, listState: LazyListState, settings:
                 style = style,
                 modifier = Modifier.fillMaxWidth().padding(bottom = (fontSize * 0.7f).dp),
             )
+        }
+    }
+}
+
+/**
+ * Uma tela por vez, como no Kindle: toque na direita avança, na esquerda volta, no meio abre o menu.
+ *
+ * Todas as linhas têm exatamente a mesma altura em pixels e a área de texto mede um número inteiro
+ * de linhas; assim, avançar "uma tela" nunca corta uma linha ao meio.
+ */
+@Composable
+private fun PagedTextReader(
+    content: BookContent,
+    listState: LazyListState,
+    settings: Settings,
+    baseStyle: TextStyle,
+    chromeVisible: Boolean,
+    onMenuTap: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val linePx = with(density) { (settings.fontSize * settings.lineHeight).sp.toPx() }.roundToInt().coerceAtLeast(1)
+    val style = baseStyle.copy(
+        // um tiquinho abaixo do inteiro: o Android arredonda a altura da linha para cima
+        lineHeight = with(density) { (linePx - 0.02f).toSp() },
+        lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
+        textIndent = TextIndent(firstLine = 1.5.em),
+    )
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val topPx = with(density) { 20.dp.roundToPx() }
+        val bottomPx = with(density) { 4.dp.roundToPx() }
+        val lines = ((constraints.maxHeight - topPx - bottomPx) / linePx).coerceAtLeast(1)
+        val pagePx = lines * linePx
+
+        // se a letra/fonte/largura mudou (ou veio do modo rolagem), realinha no começo de uma linha
+        LaunchedEffect(linePx, pagePx, constraints.maxWidth, settings.fontKey, settings.margin, settings.justify) {
+            val extra = listState.firstVisibleItemScrollOffset % linePx
+            if (extra != 0) listState.scrollBy(-extra.toFloat())
+        }
+
+        fun turn(direction: Int) {
+            scope.launch {
+                val extra = listState.firstVisibleItemScrollOffset % linePx
+                listState.scrollBy((direction * pagePx - extra).toFloat())
+            }
+        }
+        val currentTurn by rememberUpdatedState(::turn)
+        val currentChrome by rememberUpdatedState(chromeVisible)
+        val currentOnMenuTap by rememberUpdatedState(onMenuTap)
+
+        LazyColumn(
+            state = listState,
+            userScrollEnabled = false,
+            contentPadding = PaddingValues(
+                start = settings.margin.dp,
+                end = settings.margin.dp,
+                // deixa a última linha do livro chegar ao topo da tela
+                bottom = with(density) { (pagePx - linePx).toDp() },
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .pinchToResizeFont(settings)
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { tap ->
+                        val x = tap.x / size.width
+                        when {
+                            currentChrome -> currentOnMenuTap()
+                            x < SIDE_TAP_FRACTION -> currentTurn(-1)
+                            x > 1 - SIDE_TAP_FRACTION -> currentTurn(1)
+                            else -> currentOnMenuTap()
+                        }
+                    })
+                }
+                .pointerInput(Unit) {
+                    // deslizar para os lados também vira a página
+                    var total = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { total = 0f },
+                        onDragEnd = {
+                            val threshold = 48.dp.toPx()
+                            if (total < -threshold) currentTurn(1) else if (total > threshold) currentTurn(-1)
+                        },
+                    ) { _, amount -> total += amount }
+                }
+                .padding(top = 20.dp)
+                // altura exata em pixels: número inteiro de linhas
+                .layout { measurable, c ->
+                    val placeable = measurable.measure(
+                        Constraints(minWidth = c.minWidth, maxWidth = c.maxWidth, minHeight = pagePx, maxHeight = pagePx)
+                    )
+                    layout(placeable.width, pagePx) { placeable.place(0, 0) }
+                },
+        ) {
+            items(count = content.paragraphs.size, key = { it }) { index ->
+                Text(text = content.paragraphs[index], style = style, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 }

@@ -36,6 +36,8 @@ class Settings(context: Context) {
     var lineHeight by mutableFloatStateOf(prefs.getFloat("lineHeight", 1.5f))
     var margin by mutableFloatStateOf(prefs.getFloat("margin", 22f))
     var justify by mutableStateOf(prefs.getBoolean("justify", false))
+    /** true = passa uma tela por vez tocando nas laterais; false = rolagem contínua. */
+    var tapToTurn by mutableStateOf(prefs.getBoolean("tapToTurn", false))
     var keepScreenOn by mutableStateOf(prefs.getBoolean("keepScreenOn", true))
 
     val speed = ReadingSpeed(
@@ -72,6 +74,7 @@ class Settings(context: Context) {
             .putFloat("margin", margin)
             .putBoolean("justify", justify)
             .putBoolean("keepScreenOn", keepScreenOn)
+            .putBoolean("tapToTurn", tapToTurn)
             .putFloat("speedWords", speed.totalWords.toFloat())
             .putFloat("speedMs", speed.totalMs.toFloat())
             .apply()

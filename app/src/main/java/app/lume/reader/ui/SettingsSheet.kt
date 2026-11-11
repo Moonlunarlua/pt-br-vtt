@@ -106,6 +106,52 @@ fun SettingsSheet(settings: Settings, onDismiss: () -> Unit) {
                 }
             }
 
+            SectionTitle("Como passar as páginas")
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                listOf(false to "Rolar a tela", true to "Tocar nas laterais").forEach { (value, label) ->
+                    val selected = settings.tapToTurn == value
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                            )
+                            .border(
+                                BorderStroke(
+                                    if (selected) 2.5.dp else 1.dp,
+                                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                ),
+                                RoundedCornerShape(12.dp),
+                            )
+                            .clickable(role = Role.RadioButton) {
+                                settings.tapToTurn = value
+                                settings.persist()
+                            }
+                            .semantics { if (selected) contentDescription = "$label, selecionado" },
+                    ) {
+                        Text(
+                            label,
+                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                }
+            }
+            Text(
+                if (settings.tapToTurn) {
+                    "Toque na direita para avançar uma tela e na esquerda para voltar (ou deslize para os lados). " +
+                        "Toque no meio para abrir o menu."
+                } else {
+                    "Arraste o texto para cima e para baixo. Toque na tela para abrir o menu."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+
             SectionTitle("Tamanho da letra")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = {

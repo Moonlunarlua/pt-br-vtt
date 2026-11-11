@@ -109,7 +109,13 @@ private val invertMatrix = ColorMatrix(
 
 /** Modo "páginas": mostra o PDF original, uma página por vez, com zoom por pinça e duplo toque. */
 @Composable
-fun PdfPagesReader(file: File, pagerState: PagerState, theme: ReaderTheme, onTap: () -> Unit) {
+fun PdfPagesReader(
+    file: File,
+    pagerState: PagerState,
+    theme: ReaderTheme,
+    /** Recebe a posição horizontal do toque (0 = esquerda, 1 = direita) e se a página está com zoom. */
+    onTap: (xFraction: Float, zoomed: Boolean) -> Unit,
+) {
     val source = remember(file) { PdfPageSource(file) }
     DisposableEffect(source) { onDispose { source.close() } }
     var zoomed by remember { mutableStateOf(false) }
@@ -126,7 +132,7 @@ fun PdfPagesReader(file: File, pagerState: PagerState, theme: ReaderTheme, onTap
             isCurrent = pagerState.settledPage == page,
             theme = theme,
             onZoomedChange = { if (pagerState.settledPage == page) zoomed = it },
-            onTap = onTap,
+            onTap = { x -> onTap(x, zoomed) },
         )
     }
 }
@@ -138,7 +144,7 @@ private fun PdfPage(
     isCurrent: Boolean,
     theme: ReaderTheme,
     onZoomedChange: (Boolean) -> Unit,
-    onTap: () -> Unit,
+    onTap: (xFraction: Float) -> Unit,
 ) {
     val currentOnTap by rememberUpdatedState(onTap)
     val currentOnZoomed by rememberUpdatedState(onZoomedChange)
@@ -202,7 +208,7 @@ private fun PdfPage(
             .pointerInput(widthPx, heightPx) {
                 val center = Offset(size.width / 2f, size.height / 2f)
                 detectTapGestures(
-                    onTap = { currentOnTap() },
+                    onTap = { tap -> currentOnTap(if (size.width > 0) tap.x / size.width else 0.5f) },
                     onDoubleTap = { tap ->
                         if (scale > 1.01f) {
                             setZoom(1f, Offset.Zero)

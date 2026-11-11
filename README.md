@@ -9,6 +9,10 @@ App Android (Kotlin + Jetpack Compose) para ler PDFs e textos, no estilo Kindle 
 - **Dois modos para PDF**
   - *Texto*: o texto do PDF é extraído e reorganizado, então dá para mudar fonte, tamanho, espaçamento e margens.
   - *Páginas*: o PDF original, com zoom por pinça (até 6×), duplo toque e arrastar. PDFs escaneados (sem texto) abrem só neste modo.
+- **Duas formas de passar as páginas** (em *Aa → Como passar as páginas*):
+  - *Rolar a tela*: arrasta o texto para cima e para baixo.
+  - *Tocar nas laterais*: uma tela por vez, como no Kindle — toque na direita avança, na esquerda volta
+    (ou deslize para os lados); toque no meio abre o menu. Vale também para as páginas do PDF.
 - **Progresso**: porcentagem lida, página atual e **tempo restante** calculado com a *sua* velocidade de leitura,
   medida enquanto você lê (até ter dados suficientes, usa 200 palavras/min).
 - **Modos de tela**: Claro, Leitura (sépia) e Escuro — valem também para as páginas do PDF.

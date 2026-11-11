@@ -103,6 +103,50 @@ class AppSmokeTest {
     }
 
     @Test
+    fun tapOnTheSidesTurnsOneScreenAtATime() {
+        // liga o modo "tocar nas laterais" nos ajustes
+        rule.onNodeWithText("Aa").performClick()
+        rule.onNodeWithText("Tocar nas laterais").performClick()
+        rule.waitForIdle()
+        assertTrue(Settings(RuntimeEnvironment.getApplication()).tapToTurn)
+        rule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+
+        rule.onNodeWithText("Colar um texto").performClick()
+        val body = (1..40).joinToString("\n\n") { "Parágrafo número $it. " + "Era uma vez um texto de teste bem comprido. ".repeat(6) }
+        rule.onNodeWithText("Título").performTextInput("Paginado")
+        rule.onNodeWithText("Texto").performTextInput(body)
+        rule.onNodeWithText("Salvar").performClick()
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("0% lido").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
+        shot("6-paginado-tela1")
+
+        // toque na direita: avança uma tela inteira
+        rule.onRoot().performTouchInput { click(Offset(width * 0.9f, centerY)) }
+        rule.waitForIdle()
+        shot("7-paginado-tela2")
+        rule.onRoot().performTouchInput { click(Offset(width * 0.9f, centerY)) }
+        rule.waitForIdle()
+        shot("8-paginado-tela3")
+        rule.onNodeWithText("Parágrafo número 1.", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("0% lido").assertDoesNotExist()
+
+        // toque na esquerda duas vezes: volta para o começo
+        repeat(2) {
+            rule.onRoot().performTouchInput { click(Offset(width * 0.1f, centerY)) }
+            rule.waitForIdle()
+        }
+        rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
+        rule.onNodeWithText("0% lido").assertExists()
+
+        // toque no meio abre o menu em vez de virar a página
+        rule.onRoot().performTouchInput { click(center) }
+        rule.waitForIdle()
+        rule.onNodeWithText("Paginado").assertExists()
+        rule.onNodeWithText("Parágrafo número 1.", substring = true).assertExists()
+    }
+
+    @Test
     fun pdfTextExtractionFeedsTheReader() {
         val app = RuntimeEnvironment.getApplication()
         PDFBoxResourceLoader.init(app)
