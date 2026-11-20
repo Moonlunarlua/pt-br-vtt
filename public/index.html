@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Estremere VTT</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 29 9.5v13L16 30 3 22.5v-13z' fill='%23d4a94a'/%3E%3Ctext x='16' y='21' font-size='12' text-anchor='middle' font-family='serif' fill='%231a1410'%3E20%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Login -->
+  <section id="login" class="login hidden">
+    <form id="login-form" class="login-card">
+      <h1>Estremere</h1>
+      <p class="sub">Mesa virtual</p>
+      <label>Seu nome
+        <input id="login-name" autocomplete="nickname" maxlength="24" required>
+      </label>
+      <label>Senha
+        <input id="login-pass" type="password" autocomplete="current-password" required>
+      </label>
+      <button class="btn gold" type="submit">Entrar na mesa</button>
+      <p id="login-error" class="error" role="alert"></p>
+      <p class="hint">A senha do mestre e a dos jogadores aparecem na janela do servidor.</p>
+    </form>
+  </section>
+
+  <!-- Mesa -->
+  <section id="app" class="app hidden">
+    <header class="topbar">
+      <div class="brand">Estremere <span id="scene-name" class="scene-name"></span></div>
+      <div id="online" class="online" aria-label="Quem está na mesa"></div>
+      <div class="top-actions">
+        <button id="btn-lan" class="btn small gm-only" title="Endereço para os jogadores">Link da mesa</button>
+        <button id="btn-scene" class="btn small gm-only">Cena</button>
+        <button id="btn-logout" class="btn small ghost">Sair</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="board-wrap" id="board-wrap">
+        <canvas id="board"></canvas>
+        <div class="toolbar">
+          <button class="tool active" data-tool="move" title="Mover (V)">✋ Mover</button>
+          <button class="tool" data-tool="ruler" title="Régua (R)">📏 Régua</button>
+          <button id="btn-add-token" class="tool" title="Criar token no centro da tela">＋ Token</button>
+          <button id="btn-center" class="tool" title="Centralizar mapa">⌖</button>
+        </div>
+        <div class="board-hint">Arraste tokens (Shift = livre) · Roda do mouse = zoom · Arraste o fundo = mover · Duplo clique = ping</div>
+        <div id="dist" class="dist hidden"></div>
+
+        <!-- Editor de token -->
+        <form id="tok-editor" class="panel tok-editor hidden" autocomplete="off">
+          <div class="panel-head">
+            <strong id="te-title">Token</strong>
+            <button type="button" class="x" id="te-close" aria-label="Fechar">×</button>
+          </div>
+          <div class="grid2">
+            <label class="span2">Nome <input name="name" maxlength="40"></label>
+            <label>Cor <input name="color" type="color"></label>
+            <label>Tamanho (casas) <input name="size" type="number" min="0.5" max="10" step="0.5"></label>
+            <label>Vida <input name="hp" type="number"></label>
+            <label>Vida máx. <input name="hpMax" type="number" min="0"></label>
+            <label class="span2 gm-only">Dono
+              <select name="owner"><option value="">— Ninguém (NPC) —</option></select>
+            </label>
+            <label class="check gm-only span2"><input name="hidden" type="checkbox"> Oculto para os jogadores</label>
+            <label class="span2 gm-only">Anotações do mestre <textarea name="notes" rows="2" maxlength="2000"></textarea></label>
+          </div>
+          <div class="row">
+            <label class="btn small file">Imagem…<input type="file" accept="image/*" id="te-img"></label>
+            <button type="button" class="btn small ghost" id="te-img-clear">Sem imagem</button>
+          </div>
+          <div class="row">
+            <button type="button" class="btn small" id="te-combat">⚔ Pôr no combate</button>
+            <button type="button" class="btn small danger" id="te-delete">Excluir</button>
+          </div>
+          <p class="readonly-note hidden" id="te-readonly">Este token não é seu: só dá para ver.</p>
+        </form>
+      </div>
+
+      <aside class="side">
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="chat" role="tab">Chat</button>
+          <button class="tab" data-tab="combat" role="tab">Iniciativa <span id="round-badge" class="badge hidden"></span></button>
+        </nav>
+
+        <!-- Chat -->
+        <div class="tab-body" id="tab-chat">
+          <div id="chat-log" class="chat-log" aria-live="polite"></div>
+          <div class="dice-bar">
+            <button data-die="2">d2</button><button data-die="3">d3</button><button data-die="4">d4</button>
+            <button data-die="5">d5</button><button data-die="6">d6</button><button data-die="8">d8</button>
+            <button data-die="10">d10</button><button data-die="12">d12</button><button data-die="20" class="d20">d20</button>
+          </div>
+          <form id="chat-form" class="chat-form" autocomplete="off">
+            <input id="chat-input" placeholder="Mensagem ou /r 1d20+2 # Teste de Força" maxlength="1000">
+            <button class="btn gold" type="submit">Enviar</button>
+          </form>
+          <div class="chat-help">
+            <code>/r</code> rolar · <code>/dano</code> dano (avisa stun) · <code>/gr</code> secreta pro mestre · <code>/w nome</code> sussurro · <code>/me</code> ação · <code>/ajuda</code>
+          </div>
+        </div>
+
+        <!-- Combate -->
+        <div class="tab-body hidden" id="tab-combat">
+          <div class="combat-head">
+            <div class="round">Rodada <strong id="round-num">—</strong></div>
+            <div class="gm-only row">
+              <button class="btn small" id="cb-prev" title="Turno anterior">◀</button>
+              <button class="btn small gold" id="cb-next">Próximo ▶</button>
+            </div>
+          </div>
+          <div class="gm-only row wrap">
+            <button class="btn small" id="cb-roll-npcs">🎲 Rolar NPCs</button>
+            <button class="btn small" id="cb-add-sel">＋ Token selecionado</button>
+            <button class="btn small danger" id="cb-end">Encerrar</button>
+            <label class="inline">Fórmula <input id="cb-formula" size="7" maxlength="40"></label>
+          </div>
+          <div class="player-only row wrap">
+            <button class="btn small" id="cb-join">⚔ Entrar com meu token selecionado</button>
+          </div>
+          <ol id="cb-list" class="cb-list"></ol>
+          <p id="cb-empty" class="empty">Ninguém no combate ainda.</p>
+          <form id="cb-add" class="gm-only cb-add" autocomplete="off">
+            <strong>Adicionar inimigo/NPC</strong>
+            <div class="row wrap">
+              <input name="name" placeholder="Nome" maxlength="40" required>
+              <input name="hp" type="number" placeholder="Vida" class="n">
+              <input name="mod" type="number" placeholder="Mod." class="n" title="Somado à iniciativa">
+              <label class="check"><input name="hidden" type="checkbox"> Oculto</label>
+              <button class="btn small gold" type="submit">Adicionar</button>
+            </div>
+          </form>
+        </div>
+      </aside>
+    </main>
+  </section>
+
+  <!-- Cena (mestre) -->
+  <dialog id="scene-dialog" class="panel">
+    <form method="dialog" id="scene-form" autocomplete="off">
+      <div class="panel-head"><strong>Configurar cena</strong></div>
+      <div class="grid2">
+        <label class="span2">Nome <input name="name" maxlength="60"></label>
+        <label>Largura (casas) <input name="cols" type="number" min="1" max="300"></label>
+        <label>Altura (casas) <input name="rows" type="number" min="1" max="300"></label>
+        <label>Cor da grade <input name="gridColor" type="color"></label>
+        <label>Opacidade da grade <input name="gridOpacity" type="range" min="0" max="1" step="0.05"></label>
+      </div>
+      <p class="hint">A imagem de fundo é esticada para ocupar as casas. Se o mapa já tem grade desenhada, ajuste largura e altura até as linhas baterem.</p>
+      <div class="row">
+        <label class="btn small file">Imagem de fundo…<input type="file" accept="image/*" id="scene-bg"></label>
+        <button type="button" class="btn small ghost" id="scene-bg-clear">Tirar fundo</button>
+        <span class="grow"></span>
+        <button class="btn gold small" value="ok">Fechar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Link da mesa (mestre) -->
+  <dialog id="lan-dialog" class="panel">
+    <form method="dialog">
+      <div class="panel-head"><strong>Chame os jogadores</strong></div>
+      <p>Quem estiver na mesma rede (Wi-Fi ou cabo) abre um destes endereços no navegador:</p>
+      <ul id="lan-list" class="lan-list"></ul>
+      <p class="hint">Se não abrir no celular/PC deles, libere o Node no Firewall do Windows (redes privadas). A senha dos jogadores está na janela do servidor.</p>
+      <div class="row"><span class="grow"></span><button class="btn gold small">Fechar</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <div id="conn" class="conn hidden">Reconectando…</div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

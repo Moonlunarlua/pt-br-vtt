@@ -1,0 +1,16 @@
+{
+  "name": "estremere-vtt",
+  "version": "0.1.0",
+  "description": "Mesa virtual de RPG para o sistema Estremere, para jogar na rede local (LAN).",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
